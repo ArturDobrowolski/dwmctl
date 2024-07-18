@@ -1,0 +1,120 @@
+#!/usr/bin/dash
+
+MODBAR_PIPE_PATH=/var/run/user/1000/modbar.pipe
+
+invalidopt() {
+    echo "$0: invalid option $2"
+    exit 127
+}
+
+displaysel() {
+    DISPLAY_CONF_DIR=$XDG_CONFIG_HOME/display-conf
+
+    layout=$(fd . $DISPLAY_CONF_DIR | awk -F / '{print $NF}' | dmenu -p "Select display configuration: ")
+    if [ ! -z $layout ]; then
+        /bin/sh -c "$DISPLAY_CONF_DIR/$layout"
+    fi
+}
+
+powermgr() {
+    case $1 in
+        lock)
+            if command -v gpgconf >/dev/null 2>&1; then
+                gpgconf --kill gpg-agent
+            fi
+            slock
+            ;;
+        shutdown)
+            ans="$(echo -e "No\nYes" | dmenu -i -p "Shutdown?")"
+            [ "$ans" = "Yes" ] && poweroff
+            ;;
+        restart)
+            ans="$(echo -e "No\nYes" | dmenu -i -p "Reboot?")"
+            [ "$ans" = "Yes" ] && reboot
+            ;;
+        *)
+            invalidopt $1 
+            ;;
+    esac
+}
+
+screenshot() {
+    SCREENSHOT_DIRECTORY=$HOME/screenshots
+    mkdir -p $SCREENSHOT_DIRECTORY
+
+    output=$SCREENSHOT_DIRECTORY/$(date +%s).png
+
+    case $1 in
+        selection)
+            maim -s --format png $output
+            ;;
+        window)
+            maim -i $(xdotool getactivewindow) --format png $output
+            ;;
+        *)
+            invalidopt $1
+            ;;
+    esac
+
+    xclip -selection clipboard -t image/png -i $output
+}
+
+bluetoothconn() {
+    case $1 in
+        connect)
+            BLUETOOTH_DEVICE_DIR=$XDG_CONFIG_HOME/bluetooth-devices
+            
+            count=$(ls -1 $BLUETOOTH_DEVICE_DIR | wc -l)
+            device=$(fd . $BLUETOOTH_DEVICE_DIR | awk -F / '{print $NF}' | dmenu -i -l $count -p "Choose device: ")
+            mac=$(cat "$BLUETOOTH_DEVICE_DIR/$device")
+            if [ ! -z $mac ]; then
+                echo "power on" | bluetoothctl >/dev/null 2>&1
+                sleep 3
+                echo "connect $mac" | bluetoothctl >/dev/null 2>&1
+                sleep 3
+                echo "volume" > $MODBAR_PIPE_PATH
+            fi
+            ;;
+        disconnect)
+            echo "disconnect" | bluetoothctl >/dev/null 2>&1
+            echo "power off" | bluetoothctl >/dev/null 2>&1
+            echo "volume" > $MODBAR_PIPE_PATH
+            ;;
+        *)
+            invalidopt $1
+            ;;
+    esac
+}
+
+volumectl() {
+    case $1 in
+        up)
+            amixer -M sset Master 1%+
+            ;;
+        down)
+            amixer -M sset Master 1%-
+            ;;
+        toggle)
+            amixer set Master toggle
+            ;;
+        *)
+            invalidopt $1
+            ;;
+    esac
+
+    echo "volume" > $MODBAR_PIPE_PATH
+}
+
+while getopts f:c: option
+do
+    case $option in
+        f) 
+            function=${OPTARG}
+            ;;
+        c) 
+            command=${OPTARG}
+            ;;
+    esac
+done
+
+$function $command
