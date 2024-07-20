@@ -1,120 +1,241 @@
-#!/usr/bin/dash
-
-MODBAR_PIPE_PATH=/var/run/user/1000/modbar.pipe
+#!/bin/sh
 
 invalidopt() {
-    echo "$0: invalid option $2"
-    exit 127
+        echo "$0: invalid option $2"
+        exit 127
 }
 
 displaysel() {
-    DISPLAY_CONF_DIR=$XDG_CONFIG_HOME/display-conf
+        count="$(ls $DISPLAY_CONF_DIR | wc -l)"
+        layout=$(fd . "$DISPLAY_CONF_DIR" | awk -F / '{print $NF}' | \
+            dmenu -i -l $count -p "Select display configuration: ")
+        if [ ! -z $layout ]; then
+                /bin/sh -c "$DISPLAY_CONF_DIR/$layout"
+                dwmctl -f setwp -c set
+        fi
+}
 
-    layout=$(fd . $DISPLAY_CONF_DIR | awk -F / '{print $NF}' | dmenu -p "Select display configuration: ")
-    if [ ! -z $layout ]; then
-        /bin/sh -c "$DISPLAY_CONF_DIR/$layout"
-    fi
+kbsetup() {
+        xset r rate "$KB_AUTO_REPEAT_DELAY" "$KB_REPEAT_RATE"
+        setxkbmap "$KB_MAP"
+        setxkbmap -option caps:escape
 }
 
 powermgr() {
-    case $1 in
-        lock)
-            if command -v gpgconf >/dev/null 2>&1; then
-                gpgconf --kill gpg-agent
-            fi
-            slock
-            ;;
-        shutdown)
-            ans="$(echo -e "No\nYes" | dmenu -i -p "Shutdown?")"
-            [ "$ans" = "Yes" ] && poweroff
-            ;;
-        restart)
-            ans="$(echo -e "No\nYes" | dmenu -i -p "Reboot?")"
-            [ "$ans" = "Yes" ] && reboot
-            ;;
-        *)
-            invalidopt $1 
-            ;;
-    esac
+        case $1 in
+                lock)
+                        if command -v gpgconf >/dev/null 2>&1; then
+                                gpgconf --kill gpg-agent
+                        fi
+                        slock
+                        ;;
+                shutdown)
+                        ans="$(printf "%s\n%s" "No" "Yes" | \
+                            dmenu -i -p "Shutdown?")"
+                        [ "$ans" = "Yes" ] && poweroff
+                        ;;
+                restart)
+                        ans="$(printf "%s\n%s" "No" "Yes" | \
+                            dmenu -i -p "Reboot?")"
+                        [ "$ans" = "Yes" ] && reboot
+                        ;;
+                *)
+                        invalidopt $1
+                        ;;
+        esac
+}
+
+setwp() {
+        [ -z "$WALLPAPER_DIRECTORY" ] && \
+            notify-send "Error" "Variable WALLPAPER_DIRECTORY not set." && \
+            exit 1
+        ! command -v xwallpaper && \
+                notify-send "Error" "Executable \`xwallpaper\` not found." && \
+                exit 127
+        ! command -v fd && \
+                notify-send "Error" "Executable \`fd\` not found." && \
+                exit 127
+
+        case $1 in
+                set)
+                        xwallpaper --center "$CURRENT_WALLPAPER" \
+                            >/dev/null 2>&1
+                        ;;
+                select)
+                        wallpaper=$(fd . -t file -e png -e jpg -e jpeg \
+                            -e tiff "$WALLPAPER_DIRECTORY" | \
+                            awk -F '/' '{print $(NF-1)"/"$NF}' | \
+                            dmenu -i -l 30 -p "Choose wallpaper: ")
+                        ;;
+        esac
+
+        [ ! -f "$WALLPAPER_DIRECTORY/$wallpaper" ] && exit 127
+        [ ! -f "$DWM_SETTINGS" ] && touch "$DWM_SETTINGS"
+
+        if grep -q "CURRENT_WALLPAPER=" "$DWM_SETTINGS"; then
+                sed -i \
+                    's|^export CURRENT_WALLPAPER=.*|export CURRENT_WALLPAPER='"$WALLPAPER_DIRECTORY"'/'"$wallpaper"'|' \
+                    $DWM_SETTINGS
+        else
+                echo "export CURRENT_WALLPAPER=$WALLPAPER_DIRECTORY/$wallpaper" >> \
+                    $DWM_SETTINGS
+        fi
+
+        export CURRENT_WALLPAPER=$WALLPAPER_DIRECTORY/$wallpaper
+        dwmctl -f setwp -c set
+}
+
+getpass() {
+        [ -z $PASSWORD_STORE_DIR ] && \
+                notify-send "Error" "Variable PASSWORD_STORE_DIR not set." && \
+                    exit 0
+        ! command -v pass >/dev/null && \
+                notify-send "Error" "Executable \`pass\` not found." && \
+                    exit 127
+
+        entry="$(fd . "$PASSWORD_STORE_DIR" | grep '.*.gpg$' | \
+            sed 's/.*password-store\///' | \
+            dmenu -i -c -l 15 -p "Choose entry:")"
+
+        [ -z $entry ] && exit 1
+
+        pass_entry=$(echo $entry | sed -e 's/.gpg$//')
+        is_card=$(echo $entry | grep -c "credit-card")
+
+        if [ $is_card -ne 0 ]; then
+                field="$(echo "Card number\nValid until\nCVV\n" | \
+                    dmenu -p "Copy which field?" -l 3)"
+
+                case $field in
+                        "Card number")
+                                content="$(pass show "$pass_entry" -c1 &)"
+                                ;;
+                        "Valid until")
+                                content="$(pass show "$pass_entry" -c2 &)"
+                                ;;
+                        "CVV") content="$(pass show "$pass_entry" -c3 &)"
+                                ;;
+                        *) exit 0
+                                ;;
+                esac
+        else
+                field="$(echo "Password\nUsername\n" | \
+                    dmenu -p "Copy which field?" -l 2)"
+                case $field in
+                        "Password" )
+                                content="$(pass show "$pass_entry" -c1 &)"
+                                ;;
+                        "Username" )
+                                content="$(pass show "$pass_entry" -c2 &)"
+                                ;;
+                        * )
+                                exit 0 
+                                ;;
+                esac
+        fi
 }
 
 screenshot() {
-    SCREENSHOT_DIRECTORY=$HOME/screenshots
-    mkdir -p $SCREENSHOT_DIRECTORY
+        [ -z "$SCREENSHOT_DIRECTORY" ] && \
+            notify-send "Error" "Variable SCREENSHOT_DIRECTORY not set." && \
+            exit 1
 
-    output=$SCREENSHOT_DIRECTORY/$(date +%s).png
+        ! command -v maim && \
+            notify-send "Error" "Executable \`maim\` not found." && \
+            exit 127
 
-    case $1 in
-        selection)
-            maim -s --format png $output
-            ;;
-        window)
-            maim -i $(xdotool getactivewindow) --format png $output
-            ;;
-        *)
-            invalidopt $1
-            ;;
-    esac
+        mkdir -p "$SCREENSHOT_DIRECTORY"
+        output="$SCREENSHOT_DIRECTORY/$(date +%s).png"
 
-    xclip -selection clipboard -t image/png -i $output
+        case $1 in
+                selection)
+                        maim -u -s --format png $output
+                        ;;
+                window)
+                        maim -u -i $(xdotool getactivewindow) --format png \
+                            $output
+                        ;;
+                all)
+                        maim --format png $output
+                        ;;
+                *)
+                        invalidopt $1
+                        ;;
+        esac
+
+        xclip -selection clipboard -t image/png -i $output
 }
 
 bluetoothconn() {
-    case $1 in
-        connect)
-            BLUETOOTH_DEVICE_DIR=$XDG_CONFIG_HOME/bluetooth-devices
-            
-            count=$(ls -1 $BLUETOOTH_DEVICE_DIR | wc -l)
-            device=$(fd . $BLUETOOTH_DEVICE_DIR | awk -F / '{print $NF}' | dmenu -i -l $count -p "Choose device: ")
-            mac=$(cat "$BLUETOOTH_DEVICE_DIR/$device")
-            if [ ! -z $mac ]; then
-                echo "power on" | bluetoothctl >/dev/null 2>&1
-                sleep 3
-                echo "connect $mac" | bluetoothctl >/dev/null 2>&1
-                sleep 3
-                echo "volume" > $MODBAR_PIPE_PATH
-            fi
-            ;;
-        disconnect)
-            echo "disconnect" | bluetoothctl >/dev/null 2>&1
-            echo "power off" | bluetoothctl >/dev/null 2>&1
-            echo "volume" > $MODBAR_PIPE_PATH
-            ;;
-        *)
-            invalidopt $1
-            ;;
-    esac
+        case $1 in
+                connect)
+                        count=$(ls -1 $BLUETOOTH_DEVICE_DIR | wc -l)
+                        device=$(fd . $BLUETOOTH_DEVICE_DIR | \
+                            awk -F / '{print $NF}' | \
+                            dmenu -i -l $count -p "Choose device: ")
+                        mac=$(cat "$BLUETOOTH_DEVICE_DIR/$device")
+                        if [ ! -z $mac ]; then
+                                echo "power on" | bluetoothctl >/dev/null 2>&1
+                                sleep 3
+                                echo "connect $mac" | bluetoothctl \
+                                    >/dev/null 2>&1
+                                sleep 3
+                                echo "mb-volume" > "$MODBAR_PIPE_PATH"
+                        fi
+                        ;;
+                disconnect)
+                        echo "disconnect" | bluetoothctl >/dev/null 2>&1
+                        echo "power off" | bluetoothctl >/dev/null 2>&1
+                        echo "mb-volume" > "$MODBAR_PIPE_PATH"
+                        ;;
+                *)
+                        invalidopt $1
+                        ;;
+        esac
+}
+
+backlightctl() {
+        case $1 in
+                up)
+                        xbacklight +5
+                        ;;
+                down)
+                        xbacklight -5
+                        ;;
+                *)
+                        invalidopt $1
+                        ;;
+        esac
 }
 
 volumectl() {
-    case $1 in
-        up)
-            amixer -M sset Master 1%+
-            ;;
-        down)
-            amixer -M sset Master 1%-
-            ;;
-        toggle)
-            amixer set Master toggle
-            ;;
-        *)
-            invalidopt $1
-            ;;
-    esac
+        case $1 in
+                up)
+                        amixer -M sset Master 1%+
+                        ;;
+                down)
+                        amixer -M sset Master 1%-
+                        ;;
+                toggle)
+                        amixer set Master toggle
+                        ;;
+                *)
+                        invalidopt $1
+                        ;;
+        esac
 
-    echo "volume" > $MODBAR_PIPE_PATH
+        echo "mb-volume" > "$MODBAR_PIPE_PATH"
 }
 
-while getopts f:c: option
-do
-    case $option in
-        f) 
-            function=${OPTARG}
-            ;;
-        c) 
-            command=${OPTARG}
-            ;;
-    esac
+while getopts f:c: option; do
+        case $option in
+                f)
+                        function=${OPTARG}
+                        ;;
+                c)
+                        command=${OPTARG}
+                        ;;
+        esac
 done
 
 $function $command
